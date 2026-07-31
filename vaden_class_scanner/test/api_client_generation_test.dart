@@ -5,33 +5,39 @@ import 'package:build_test/build_test.dart';
 import 'package:test/test.dart';
 import 'package:vaden_class_scanner/src/flutter_builder.dart';
 
+/// Runs [FlutterVadenBuilder] against a single fixture file and returns the
+/// generated `lib/vaden_application.dart` contents.
+///
+/// `vaden_core` (used by the `@ApiClient`/`@DTO` imports in the fixtures)
+/// isn't part of the in-memory sourceAssets, so it needs to be loaded from
+/// the real package resolution of the current isolate for the analyzer to
+/// resolve it.
+Future<TestBuilderResult> _runBuilder(String fixturePath) async {
+  final fixtureSource = File(fixturePath).readAsStringSync();
+  final fixtureFileName = fixturePath.split('/').last;
+
+  final readerWriter = TestReaderWriter(rootPackage: 'pkg');
+  await readerWriter.testing.loadIsolateSources();
+  readerWriter.testing.writeString(
+    AssetId('pkg', 'lib/$fixtureFileName'),
+    fixtureSource,
+  );
+
+  return testBuilder(
+    FlutterVadenBuilder(),
+    {},
+    rootPackage: 'pkg',
+    readerWriter: readerWriter,
+    flattenOutput: true,
+  );
+}
+
 void main() {
   test(
     '@ApiClient classes are registered via their generated implementation '
     'instead of tearing off the abstract constructor (regression for #139)',
     () async {
-      final fixtureSource = File(
-        'test/fixtures/api_client_fixture.dart',
-      ).readAsStringSync();
-
-      // `vaden_core` (used by the fixture's `@ApiClient` import) isn't part
-      // of the in-memory sourceAssets, so it needs to be loaded from the
-      // real package resolution of the current isolate for the analyzer to
-      // resolve it.
-      final readerWriter = TestReaderWriter(rootPackage: 'pkg');
-      await readerWriter.testing.loadIsolateSources();
-      readerWriter.testing.writeString(
-        AssetId('pkg', 'lib/api_client_fixture.dart'),
-        fixtureSource,
-      );
-
-      final result = await testBuilder(
-        FlutterVadenBuilder(),
-        {},
-        rootPackage: 'pkg',
-        readerWriter: readerWriter,
-        flattenOutput: true,
-      );
+      final result = await _runBuilder('test/fixtures/api_client_fixture.dart');
 
       final output = result.readerWriter.testing.readString(
         AssetId('pkg', 'lib/vaden_application.dart'),
@@ -48,6 +54,24 @@ void main() {
         contains('_injector.addLazySingleton<LaunchApi>(_LaunchApi.new)'),
       );
       expect(output, contains('class _LaunchApi implements LaunchApi'));
+    },
+  );
+
+  test(
+    'builder succeeds and emits no @ApiClient boilerplate when the package '
+    'has no @ApiClient classes',
+    () async {
+      final result = await _runBuilder('test/fixtures/fixture_dtos.dart');
+
+      expect(result.succeeded, isTrue, reason: result.errors.join('\n'));
+
+      final output = result.readerWriter.testing.readString(
+        AssetId('pkg', 'lib/vaden_application.dart'),
+      );
+
+      expect(output, contains('class _DSON extends DSON'));
+      expect(output, isNot(contains('implements LaunchApi')));
+      expect(output, isNot(contains('LaunchApi')));
     },
   );
 }
